@@ -1,0 +1,139 @@
+---
+title: "PCAngsd"
+author: "Mike Connelly"
+date: "2023-05-10"
+output: html_document
+---
+## Setup and packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, cache = TRUE)
+options(stringsAsFactors = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+```{r packages}
+library("tidyverse")
+library("ggrepel")
+#
+source("./R/setup_colors_functions.R")
+#
+`%notin%` <- Negate(`%in%`)
+```
+
+## Import sample metadata
+```{r sample_data_import}
+samples <- read_csv("./data/Towson_Hydractinia_round1_metadata.csv")
+```
+
+NOTE: Remove clones from the dataset using IBS analysis before running PCAngsd. Code for selecting no-clones samples based on highest proportion of sites w/ 5x coverage is in 02_pipeline_metrics.Rmd
+
+## All samples (clones included) PCA
+```{r pca}
+# HSymV2 aligments of full analysis samples
+C <- as.matrix(read.table("./outputs/angsd/midatlantic/midatlantic_ibs05.cov"))
+C <- as.matrix(read.table("./outputs/angsd/midatlantic_nooutlier/midatlantic_nooutlier_ibs05.cov"))
+
+e <- eigen(C)
+```
+```{r pca_test_plot}
+plot(e$vectors[,1:2],xlab="PC1",ylab="PC2", main="individual allele frequency")
+#
+plot(e$vectors[,2:3],xlab="PC2",ylab="PC3", main="individual allele frequency")
+# 
+plot(e$vectors[,3:4],xlab="PC3",ylab="PC4", main="individual allele frequency")
+# 
+```
+```{r bamfile_sample_order_check}
+# reading list of bam files = order of samples in IBS matrix
+bams <- read.table("./outputs/angsd/midatlantic/midatlantic_bamfile.txt",header=F)[,1]
+bams <- read.table("./outputs/angsd/midatlantic_nooutlier/midatlantic_nooutlier_bamfile.txt",header=F)[,1]
+#
+bam_ids <- sub("/data/NHGRIBaxevanis/connellym2/projects/hydractiniidae_popgen/outputs/alignments/", "", bams, perl=T)
+bam_ids <- sub(".sorted.md.rg.bam", "", bam_ids, perl=T)
+#
+bam_ids
+```
+```{r select_samples}
+# aligning sample metadata with bams list, then check again
+samples_noclones <- samples[match(bam_ids, samples$`Sample_ID`),] 
+# do all the sample ids match the bam file ids in the correct order?
+all(samples_noclones$`Sample_ID` == bam_ids) # TRUE
+```
+```{r combine_pca_metadata}
+# combine pc coordinates with sample metadata
+pcs <- as.data.frame(e$vectors) %>% cbind(samples_noclones) %>% left_join(samples)
+# store variable with % variance explained by each PC
+pcvar <- round(e$values, 2)
+#
+```
+```{r screeplot}
+pcvardf <- data.frame("PC"=seq(1:length(pcvar)), pcvar)
+pcvardf %>% ggplot(aes(PC, pcvar)) + geom_col() + xlim(c(0,10))
+# only first 4 PCs have >5% variance explained
+```
+```{r}
+pca <- pcs %>% ggplot(aes(x = V1, y = V2)) +
+  geom_point(aes(fill = `Site code`), shape = 21, size = 3, alpha = 0.75, show.legend = T) +
+  # scale_fill_manual(values = spp_colors) +
+  # facet_grid(Region ~ .) +
+  # facet_wrap(mtorf_type ~ .) +
+  coord_fixed(pcvar[2]/pcvar[1]) +
+  xlab(paste0( "PC1 (", pcvar[1], "%)")) + 
+  ylab(paste0( "PC2 (", pcvar[2], "%)")) +
+  theme(plot.title = element_text(size = 16, hjust = -0.2),
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12)) 
+
+pdf("./outputs/figures/pcangsd_nooutlier_samples.pdf")
+print(pca)
+dev.off()
+```
+```{r}
+# identify outliers
+outlier_samples <- pcs %>% filter(V1 < -0.2 | V2 > 0.2) %>% pull(Sample_ID)
+```
+```{r}
+find_outliers <- function(data) {
+    q1 <- quantile(data, 0.25)
+    q3 <- quantile(data, 0.75)
+    iqr <- q3 - q1
+    lower_bound <- q1 - (1.5 * iqr)
+    upper_bound <- q3 + (1.5 * iqr)
+    which(data < lower_bound | data > upper_bound)
+}
+
+# Find outliers on the first PC
+outliers_pc1 <- find_outliers(pcs$V1)
+
+# Find outliers on the second PC
+outliers_pc2 <- find_outliers(pcs$V2)
+
+# Combine results to get a single list of outlier sample indices
+all_outliers <- unique(c(outliers_pc1, outliers_pc2))
+
+# Print the identified outlier samples
+if (length(all_outliers) > 0) {
+   outlier_samples <- pcs$Sample_ID[all_outliers]
+    cat("Potential outlier samples:", pcs$Sample_ID[all_outliers], "\n")
+} else {
+    cat("No outliers detected using the IQR method.\n")
+}
+```
+
+
+```{r}
+pcs %>% filter(Sample_ID %notin% outlier_samples) %>% ggplot(aes(x = V1, y = V2)) +
+  geom_point(aes(fill = `Site code`), shape = 21, size = 3, alpha = 0.75, show.legend = T) +
+  # scale_fill_manual(values = spp_colors) +
+  # facet_grid(Region ~ .) +
+  # facet_wrap(mtorf_type ~ .) +
+  coord_fixed(pcvar[2]/pcvar[1]) +
+  xlab(paste0( "PC1 (", pcvar[1], "%)")) + 
+  ylab(paste0( "PC2 (", pcvar[2], "%)")) +
+  theme(plot.title = element_text(size = 16, hjust = -0.2),
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12)) 
+```

@@ -1,0 +1,264 @@
+---
+title: "Hydractiniidae sample origin map"
+author: "Mike Connelly"
+date: "05/06/2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+```{r packages, message=FALSE}
+library("tidyverse")
+library("raster") #for processing some spatial data
+library("rnaturalearth") #for downloading shapefiles
+library("sf") #for processing shapefiles
+library("elevatr") #for downloading elevation data
+library("dplyr") #to keep things tidy
+library("magrittr") #to keep things very tidy
+library("ggspatial") #for scale bars and arrows
+library("ggplot2") #for tidy plotting
+library("ggpubr") #for easy selection of symbols
+library("colourpicker") #for easy selection of colors
+library("rnaturalearthhires")
+library("maps") # for getting pacific-centered map
+library("scatterpie") # for plotting proportions of different lineages on map
+library("ggnewscale") # for adding new fill scale to keep elevation
+library("ggrepel") # for adding labels to plot
+#
+source("./R/setup_colors_functions.R")
+```
+
+## Prepare map data
+```{r load shapefiles, message=FALSE}
+# Load shapefiles from rnaturalearth package
+map <- ne_countries(scale = 10, returnclass = "sf")
+# 
+states <- ne_states(returnclass = "sf")
+# 
+ocean <- ne_download(scale = 10, type = 'ocean', 
+                   category = 'physical', returnclass = 'sf')
+# 
+rivers <- ne_download(scale = 10, type = 'rivers_lake_centerlines', 
+                    category = 'physical', returnclass = 'sf')
+# 
+reefs <- ne_download(scale = 10, type = 'reefs',
+                     category = "physical", returnclass = 'sf')
+#
+minor_islands <- ne_download(scale = 10, type = 'minor_islands',
+                             category = "physical", returnclass = 'sf')
+#
+minor_islands_coastline <- ne_download(scale = 10, type = 'minor_islands_coastline',
+                             category = "physical", returnclass = 'sf')
+```
+```{r Quick check on basic shapefiles, echo = FALSE, fig.align= "center", fig.width= 6}
+quickCheck <-
+  ggplot() +
+  geom_sf(data = ocean, color = "black", size = 0.05, fill = "#def3f6") +
+  geom_sf(data = reefs, color = "red", size = 0.05, fill = "red") +
+  geom_sf(data = rivers, color = "blue", size = 0.05) +
+  geom_sf(data = states, color = "black", size = 0.05, fill = "#f5f5f5", alpha = 0.5) +
+  geom_sf(data = minor_islands, color = "black", size = 0.05, fill = "green") +
+  theme(panel.grid.major = element_blank(), 
+        panel.background = element_blank(), 
+        panel.border = element_rect(fill = NA))
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+quickCheck
+```
+
+## Small-area maps
+```{r test Coiba map}
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+MapTest <-
+  ggplot() +
+  # geom_tile(data = elevDF, aes(x=x, y=y, fill=elevation), alpha =0.4)+
+  # scale_fill_gradient(low="#a3a0a0", high= "#000000", 
+  #                     na.value="transparent")+
+  geom_sf(data = ocean, size = 0.05, fill = "#add8e6")+
+  geom_sf(data = rivers, color = "#d7f2fa", size = 0.5)+
+  geom_sf(data = states, color = "black", size = 0.05, fill = "#f5f5f5", alpha = 0.2)+
+  geom_sf(data = map, color = "black", size = 0.1, fill = "#f5f5f5", alpha = 0.2)+
+  geom_sf(data = minor_islands, color = "black", size = 0.1, fill = "#f5f5f5") +
+    coord_sf(
+    xlim = c(-77, -75),
+    ylim = c(36.5, 38.5)) +
+  labs(x="Longitude", y="Latitude", elevation = "Elevation") +
+  theme(panel.grid.major = element_blank(),
+  panel.background = element_rect(fill = "#f0f8ff"),
+  panel.border = element_rect(fill = NA))
+MapTest
+```
+
+## Plot number of samples on map 
+```{r sample_data_import}
+samples <- read_csv("./data/Towson_Hydractiniidae_all_metadata_march2026.csv")
+```
+```{r}
+# use only unique genotypes 
+samples <- samples_noclones
+```
+
+### Prepare map metadata
+```{r sample_data_tidy}
+# filter out irrelevant samples, select only informative columns
+site_coords <- samples %>%
+  group_by(`Site code`) %>%
+  summarise(Longitude=mean(Longitude), Latitude=mean(Latitude))
+
+samples_sites <- samples %>% 
+  group_by(`Site code`, `Site`, `State`, `Latitude`, `Longitude`) %>% 
+  count()
+
+samples_sites$`Site code` <- factor(samples_sites$`Site code`, levels = names(site_cols), ordered = T)
+```
+
+### Sample Numbers Figures
+
+### Range of all current samples
+```{r sample numbers: powerpoint}
+pdf(file="./outputs/figures/sample_map_numbers_march_2026.pdf", width = 8.5, height = 11)
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+map_sample_numbers <-
+  ggplot() +
+  geom_sf(data = ocean, color = "black", size = 0.1, fill = "aliceblue") +
+  geom_sf(data = rivers, color = "#d7f2fa", size = 0.5)+
+  geom_sf(data = states, color = "darkgrey", size = 0.1, fill = "antiquewhite", alpha = 0.5) +
+  geom_sf(data = map, color = "black", size = 0.1, fill = "antiquewhite", alpha = 0.5) +
+    coord_sf(
+    xlim = c(-82, -66),
+    ylim = c(30, 48)) +
+  #
+  new_scale_fill() +
+  geom_point(aes(x = Longitude, y = Latitude, size = n, fill = `Site code`),
+                    data = samples_sites, shape = 21, alpha = .8, color = "black", show.legend = T) +
+  scale_size_continuous(range = c(0.2, 10), limits = c(0, 40), breaks = c(5, 10, 20, 40), name = "# samples") +
+  scale_fill_manual(values = site_cols) +
+  geom_label_repel(aes(x = Longitude, y = Latitude, label = `Site code`), data = samples_sites, size = 3, max.overlaps = 100, box.padding = 0.4) +
+  #
+  labs(x="Longitude", y="Latitude") +
+  theme(panel.grid.major = element_blank(),
+        panel.background = element_rect(fill = "#f0f8ff"),
+        panel.border = element_rect(fill = NA),
+        plot.title = element_text(size = 12),
+        axis.title = element_blank(), 
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.position = c(0.8, 0.25)) +
+  guides(fill = guide_legend(override.aes = list(size = 5))) +
+  ggtitle(expression('All '*italic("Hydractinia")*' sampling locations (March 2026)'))
+
+map_sample_numbers
+dev.off()
+```
+
+### Entire US East Coast
+```{r sample numbers: powerpoint}
+pdf(file="./outputs/figures/sample_map_numbers_useastcoast.pdf", width = 10, height = 7.5)
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+map_sample_numbers <-
+  ggplot() +
+  geom_sf(data = ocean, color = "black", size = 0.1, fill = "aliceblue") +
+  geom_sf(data = rivers, color = "#d7f2fa", size = 0.5)+
+  geom_sf(data = states, color = "darkgrey", size = 0.1, fill = "antiquewhite", alpha = 0.5) +
+  geom_sf(data = map, color = "black", size = 0.1, fill = "antiquewhite", alpha = 0.5) +
+    coord_sf(
+    xlim = c(-100, -66),
+    ylim = c(24, 46)) +
+  #
+  new_scale_fill() +
+  geom_point(aes(x = Longitude, y = Latitude, fill = `State`), #size = n,
+                    data = samples_sites, shape = 21, size = 2, alpha = .8, color = "black", show.legend = T) +
+   geom_text_repel(aes(x = Longitude, y = Latitude, label = `Site code`), data = samples_sites, size = 3, max.overlaps = 100) +
+  # scale_size_continuous(range = c(0.2, 10), limits = c(0, 40), breaks = c(5, 10, 20, 40), name = "# samples") +
+  # scale_fill_manual(values = region_colors) +
+  #
+  labs(x="Longitude", y="Latitude") +
+  theme(panel.grid.major = element_blank(),
+        panel.background = element_rect(fill = "#f0f8ff"),
+        panel.border = element_rect(fill = NA),
+        plot.title = element_text(size = 12),
+        axis.title = element_blank(), 
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.position = "right") +
+  ggtitle(expression('U.S. Atlantic '*italic("Hydractinia")*' sampling locations'))
+
+map_sample_numbers
+dev.off()
+```
+
+### Coastal Virginia
+```{r sample numbers: powerpoint}
+pdf(file="./outputs/figures/sample_map_numbers_all.pdf", width = 6.5, height = 8)
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+map_sample_numbers <-
+  ggplot() +
+  geom_sf(data = ocean, color = "black", size = 0.1, fill = "aliceblue") +
+  geom_sf(data = rivers, color = "#d7f2fa", size = 0.5)+
+  geom_sf(data = states, color = "darkgrey", size = 0.1, fill = "antiquewhite", alpha = 0.5) +
+  geom_sf(data = map, color = "black", size = 0.1, fill = "antiquewhite", alpha = 0.5) +
+    coord_sf(
+    xlim = c(-77, -75),
+    ylim = c(36.5, 38.5)) +
+  #
+  new_scale_fill() +
+  geom_point(aes(x = Longitude, y = Latitude, size = n, fill = `Site code`),
+                    data = samples_sites, shape = 21, alpha = .8, color = "black", show.legend = T) +
+  scale_size_continuous(range = c(0.4, 10), limits = c(0, 40), breaks = c(10, 20, 40), name = "# samples") +
+  scale_fill_manual(values = site_cols) +
+  #
+  labs(x="Longitude", y="Latitude") +
+  theme(panel.grid.major = element_blank(),
+        panel.background = element_rect(fill = "#f0f8ff"),
+        panel.border = element_rect(fill = NA),
+        plot.title = element_text(size = 12),
+        axis.title = element_blank(), 
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.position = "right") +
+  ggtitle(expression('Coastal Virginia '*italic("Hydractinia")*' sampling locations'))
+
+map_sample_numbers
+dev.off()
+```
+
+### Long Island and Sound
+```{r sample numbers: powerpoint}
+pdf(file="./outputs/figures/sample_map_numbers_ne.pdf", width = 6.5, height = 8)
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+map_sample_numbers <-
+  ggplot() +
+  geom_sf(data = ocean, color = "black", size = 0.1, fill = "aliceblue") +
+  geom_sf(data = rivers, color = "#d7f2fa", size = 0.5)+
+  geom_sf(data = states, color = "darkgrey", size = 0.1, fill = "antiquewhite", alpha = 0.5) +
+  geom_sf(data = map, color = "black", size = 0.1, fill = "antiquewhite", alpha = 0.5) +
+    coord_sf(
+    xlim = c(-74, -70),
+    ylim = c(40, 43)) +
+  #
+  new_scale_fill() +
+  geom_point(aes(x = Longitude, y = Latitude, size = n, fill = `Site code`),
+                    data = samples_sites, shape = 21, alpha = .8, color = "black", show.legend = T) +
+  scale_size_continuous(range = c(0.4, 10), limits = c(0, 40), breaks = c(10, 20, 40), name = "# samples") +
+  # geom_text_repel(aes(x = Longitude, y = Latitude, label = `Site code`), data = samples_sites, size = 3) +
+  scale_fill_manual(values = site_cols) +
+  #
+  labs(x="Longitude", y="Latitude") +
+  theme(panel.grid.major = element_blank(),
+        panel.background = element_rect(fill = "#f0f8ff"),
+        panel.border = element_rect(fill = NA),
+        plot.title = element_text(size = 12),
+        axis.title = element_blank(), 
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.position = "right") +
+  ggtitle(expression('Long Island and New England sampling locations'))
+
+map_sample_numbers
+dev.off()
+```

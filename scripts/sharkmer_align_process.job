@@ -1,0 +1,42 @@
+#!/bin/bash
+#SBATCH --mem=80g
+#SBATCH --cpus-per-task=2
+#SBATCH --time=12:00:00
+#SBATCH --job-name sharkmer_process_markers
+#SBATCH --mail-type BEGIN,END,FAIL,TIME_LIMIT_80
+
+#./bash/sharkmer_process.job
+# purpose: process mitochondrial barcodes derived from sharkmer
+
+# create variable for source and target directories
+prodir="/data/NHGRIBaxevanis/connellym2/projects/hydractiniidae_popgen"
+sharkdir="${prodir}/outputs/sharkmer/"
+
+# making a list of sample names
+set=$1 # ex. midatlantic
+samples=$(cat ${prodir}/data/${set}_samples.txt)
+
+# load module(s)
+module load blast seqkit mafft iqtree
+
+# Collect all the barcode markers (Miglietta 16S, cnidaria 16S, CO1, 18S, 28S, ITS, ITS-v2, EF1A, 28S-v2) into combined fastas
+markers="miglietta_16S cnidaria_16S cnidaria_CO1 cnidaria_18S cnidaria_28S cnidaria_ITS cnidaria_ITS-v2 cnidaria_EF1A cnidaria_28S-v2"
+
+for marker in $markers; 
+do echo "Processing sharkmer results for $marker barcode"
+
+# filter by minimum length
+seqkit seq -m 600
+
+# perform multiple sequence alignment
+mafft --maxiterate 1000 --localpair ${sharkdir}/all_processed/${marker}/sharkmer_${set}_${marker}_${length}.fasta > ${sharkdir}/all_processed/${marker}/sharkmer_${set}_${marker}_${length}_aligned.fasta
+
+# automatically trim alignment 
+clipkit ${sharkdir}/all_processed/${marker}/sharkmer_${set}_${marker}_${length}_aligned.fasta -m smart-gap -o ${sharkdir}/all_processed/${marker}/sharkmer_${set}_${marker}_${length}_aligned_clipkit.fasta
+
+# perform maximum likelihood analysis
+iqtree2 -s ${sharkdir}/all_processed/${marker}/sharkmer_${set}_${marker}_aligned_clipkit.fasta -m TEST -B 1000 -alrt 1000 --prefix ${sharkdir}/all_processed/${marker}/sharkmer_${set}_${marker}_aligned_clipkit
+done
+
+# 16S ML analysis
+#iqtree2 -s Genbank_16S_seqs_aligned_clipkit.fasta -o EU645322.1,EU645315.1,EU645311.1,EU645305.1,EU645303.1 -m TEST -B 1000 -alrt 1000 --prefix iqtree/Genbank_16S_seqs_aligned_clipkit 

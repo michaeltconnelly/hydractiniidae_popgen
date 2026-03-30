@@ -1,0 +1,251 @@
+---
+title: "Podocoryna taxonomic identification"
+author: "Mike Connelly"
+date: "2025-05-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+```{r packages}
+library("tidyverse")
+library("readxl")
+# 
+library("phytools")
+library("pegas")
+library("ggtree")
+library("msa")
+```
+
+# 16S
+## Import metadata for 16S sequences in Miglietta et al. 2009
+```{r}
+miglietta_metadata <- read_xlsx("./data/marker_genes/mt16S/Miglietta_2009_Table1_fixed.xlsx")
+cairns_stylaster <- read_xlsx("./data/marker_genes/mt16S/Cairns_Stylaster.xlsx")
+```
+```{r}
+# filter to Podocoryna and Hydractinia sequences with 16S data
+miglietta_select_hydractiniidae <- miglietta_metadata %>%
+  filter(grepl("Podocoryna", `Primary species identification`) | grepl("Hydractinia", `Primary species identification`) | grepl("Clava ", `Primary species identification`)) %>%
+  # filter(grepl("Hydractinia", `Primary species identification`) & grepl("USA", `Collecting sites`)) %>% 
+  filter(!grepl("xxx",`GenBank accession number 16S/EF1α`)) %>% 
+  separate_wider_delim(`GenBank accession number 16S/EF1α`, "/", names = c("GenBank 16S", "GenBank EF1α"), too_few = "align_start") #%>% 
+
+# filter to only species in the Atlantic/Mediterranean (no Pacific species)
+atlantic_spp <- c("Clava multicornis",
+                  "Hydractinia echinata", "Hydractinia fucicola", "Hydractinia inermis", "Hydractinia polyclina", "Hydractinia pruvoti", "Hydractinia symbiolongicarpus", "Hydractinia symbiopollicaris", "Hydractinia new spec.",
+                  "Podocoryna americana", "Podocoryna borealis", "Podocoryna carnea", "Podocoryna exigua")
+
+miglietta_atlantic_hydractiniidae <- miglietta_select_hydractiniidae %>% 
+  filter(`Primary species identification` %in% atlantic_spp | Number %in% c(190, 191, 196)) %>% # need to manually include Hydractinia [GM] samples
+  arrange(`Primary species identification`, `GenBank EF1α`) %>% 
+# keep only top 5 per species
+  group_by(`Primary species identification`) %>%
+  slice_head(n = 5) %>% 
+  arrange(desc(`GenBank 16S`))
+# 50 samples total 
+```
+```{r}
+# write GenBank 16S accession numbers
+# write_lines(miglietta_atlantic_hydractiniidae$`GenBank 16S`, "./data/hydractinid_16S_seqs/Miglietta_Atlantic_Select_GenBank_16S_seqs.txt")
+```
+
+## Import phylogenetic tree
+```{r}
+tree <- read.tree("./data/marker_genes/mt16S/iqtree/Genbank_16S_seqs_aligned_clipkit.treefile")
+# tree <- midpoint.root(tree)
+# tree <- root(tree, "EU645303.1")
+tree$root.edge <- 1
+tree$tip.label <- gsub("\\.1$", "", tree$tip.label)
+tips <- tree$tip.label
+```
+```{r}
+tree_16S <- tree
+ggtree(tree_16S) + geom_tiplab(size = 3, hjust = -0.02) 
+```
+
+
+```{r}
+## setup annotation information
+tip_annotation <- miglietta_atlantic_hydractiniidae %>% ungroup() %>% 
+  mutate(tip_id = `GenBank 16S`,
+         tip_label_a = paste0(`Specimen code in trees`, " (", `GenBank 16S`, ")"),
+         tip_label_b = paste0(`Primary species identification`, " - ", `Collecting sites`, " (", `GenBank 16S`, ")"),
+         tip_label_c = paste0("italic(", `Primary species identification`, ")", "~-~", '"', `Collecting sites`, '"', "~(", `GenBank 16S`, ")"),
+         Genus = str_extract(`Primary species identification`, "[A-z]+"),
+         Substrate = Susbstate) %>% 
+  dplyr::select(`tip_id`, tip_label_a, tip_label_b, tip_label_c, Genus, Substrate)
+#
+genome_tips <- data.frame(tip_id = c("Podocoryna_americana_mt_genome_16S_rRNA", "Hydractinia_symbiolongicarpus_mt_genome_16S_rRNA", "Hydractinia_echinata_mt_genome_16S_rRNA"),
+                         tip_label_a = c("Podocoryna_genome_16S_rRNA_mt", "Hydractinia_symbiolongicarpus_mt_genome_16S_rRNA", "Hydractinia_echinata_mt_genome_16S_rRNA"),
+                         tip_label_b = c("Podocoryna genome strain - New Haven, CT, USA", "Hydractinia symbiolongicarpus genome strain - New Haven, CT, USA", "Hydractinia echinata genome strain - Galway, Ireland"),
+                         tip_label_c = c('bold(bolditalic(Podocoryna americana)~genome~strain~-~"New Haven, CT, USA")', 'bold(bolditalic(Hydractinia symbiolongicarpus)~genome~strain~-~"New Haven, CT, USA")', 'bold(bolditalic(Hydractinia echinata)~genome~strain~-~"Galway, Ireland")'),
+                         Genus = "Genome",
+                         Substrate = "Lab")
+#
+outgroup_tips <- cairns_stylaster
+#
+tip_annotation <- rbind(genome_tips, tip_annotation, outgroup_tips)
+tip_annotation <- tip_annotation %>% mutate(tip_label_d = sub(" ", "~", tip_label_c))
+
+all(tips %in% tip_annotation$tip_id)
+tip_annotation <- tip_annotation[match(tips, tip_annotation$tip_id),]
+```
+```{r}
+# change tip labels
+tree$tip.label <- tip_annotation$tip_label_d
+tip_annotation <- tip_annotation %>% relocate(tip_label_d)
+```
+```{r node_labels}
+# node labels with bootstrap support
+node.labels <- tree$node.label
+# preserve original labels
+node.labels.original <- node.labels
+node.labels <- node.labels.original
+
+# remove root label
+node.labels[node.labels == "Root"] <- ""
+# remove low-support bootstrap values / mark with asterisks - <80%?
+node.labels[grepl("^0", node.labels)] <- ""
+# remove LRT support scores
+node.labels <- gsub("/.*$", "", node.labels)
+
+# check to see if formatting is correct
+node.labels
+#
+tree$node.label <- node.labels
+```
+
+```{r}
+hydractinid_16S_tree <- ggtree(tree, right = T) %<+% tip_annotation +
+  geom_tiplab(size = 3, hjust = -0.02, parse = TRUE, align = F) +
+  # geom_text(aes(label = node)) +
+  geom_tippoint(fill = "black", color = "black", shape = 21, size = 1.6, show.legend = F) +
+  geom_nodelab(size = 2, hjust = 1.4, vjust = 1.3) +
+  # geom_hilight(node=62, fill="tomato", alpha=.5) +
+  geom_rootedge(rootedge = 0.025) +
+  geom_treescale(0,0.2, width = 0.05) + 
+  xlim(c(-0.025, 0.5)) +
+  theme(legend.position = c(0.15, 0.2))
+```
+```{r}
+pdf("./outputs/figures/hydractinid_16S_reference_tree.pdf", width = 10.5, height = 9.5)
+print(hydractinid_16S_tree)
+dev.off()
+```
+
+## Summarize alignment
+```{r}
+hydractinid_16S_fasta <- ape::read.FASTA("./data/marker_genes/mt16S/Genbank_16S_seqs_aligned_clipkit.fasta")
+hydractinid_16S_fasta_subset <- hydractinid_16S_fasta[c(1,2,9,19,20)]
+```
+```{r}
+distance_matrix <- dist.dna(hydractinid_16S_fasta, model = "p")
+
+as.matrix(distance_matrix) %>% View()
+```
+
+
+# EF1α
+```{r}
+miglietta_select_hydractiniidae_ef1a <- miglietta_select_hydractiniidae %>% filter(!is.na(`GenBank EF1α`))
+miglietta_atlantic_hydractiniidae %>% filter(!is.na(`GenBank EF1α`))
+```
+```{r}
+# write GenBank EF1α accession numbers
+# write_lines(miglietta_select_hydractiniidae_ef1a$`GenBank EF1α`, "./data/hydractinid_ef1a_seqs/Miglietta_Atlantic_Select_GenBank_ef1a_seqs.txt")
+```
+
+## Import phylogenetic tree
+```{r}
+tree <- read.tree("./data/marker_genes/EF1A/iqtree/Genbank_EF1A_seqs_aligned_clipkit.treefile")
+tree <- midpoint.root(tree)
+# tree <- root(tree, "EU645303.1")
+tree$root.edge <- 1
+tree$tip.label <- gsub("\\.1$", "", tree$tip.label)
+tips <- tree$tip.label
+```
+```{r}
+tree_ef1a <- tree
+ggtree(tree_ef1a) + geom_tiplab(size = 3, hjust = -0.02) 
+```
+
+```{r}
+## setup annotation information
+tip_annotation <- miglietta_select_hydractiniidae_ef1a %>% ungroup() %>% 
+  mutate(tip_id = `GenBank EF1α`,
+         tip_label_a = paste0(`Specimen code in trees`, " (", `GenBank 16S`, ")"),
+         tip_label_b = paste0(`Primary species identification`, " - ", `Collecting sites`, " (", `GenBank EF1α`, ")"),
+         tip_label_c = paste0("italic(", gsub(" ", "~", `Primary species identification`), ")", "~-~", '"', `Collecting sites`, '"', "~(", `GenBank EF1α`, ")"),
+         Genus = str_extract(`Primary species identification`, "[A-z]+"),
+         Substrate = Susbstate) %>% 
+  dplyr::select(`tip_id`, tip_label_a, tip_label_b, tip_label_c, Genus, Substrate)
+
+genome_tip <- data.frame(tip_id = "Podo_0014_13385229-13387503_-_", tip_label_a = "Podocoryna_genome_EF1α", tip_label_b = "Podocoryna genome strain - New Haven, CT, USA", tip_label_c = 'bold(bolditalic(Podocoryna)~genome~strain~-~"New Haven, CT, USA")', Genus = "Genome", Substrate = "Lab")
+
+tip_annotation <- rbind(genome_tip, tip_annotation) %>% mutate(tip_label_d = gsub("\u00A0", "~", tip_label_c))
+
+tip_annotation <- tip_annotation[match(tips, tip_annotation$tip_id),]
+```
+```{r}
+# change tip labels
+tree$tip.label <- tip_annotation$tip_label_d
+tip_annotation <- tip_annotation %>% relocate(tip_label_d)
+```
+```{r node_labels}
+# node labels with bootstrap support
+node.labels <- tree$node.label
+# preserve original labels
+node.labels.original <- node.labels
+node.labels <- node.labels.original
+
+# remove root label
+node.labels[node.labels == "Root"] <- ""
+# remove low-support bootstrap values / mark with asterisks - <80%?
+node.labels[grepl("^0", node.labels)] <- ""
+# remove LRT support scores
+node.labels <- gsub("/.*$", "", node.labels)
+
+# check to see if formatting is correct
+node.labels
+#
+tree$node.label <- node.labels
+```
+```{r}
+hydractinid_ef1a_tree <- ggtree(tree, right = T) %<+% tip_annotation +
+  geom_tiplab(size = 3, hjust = -0.02, parse = T) +
+  # geom_text(aes(label = node)) +
+  geom_tippoint(fill = "black", color = "black", shape = 21, size = 1.6, show.legend = F) + 
+  geom_nodelab(size = 2, hjust = 1.3, vjust = 1.3) +
+  geom_hilight(node = 29, fill="tomato", alpha=.5) +
+  geom_rootedge(rootedge = 0.025) +
+  geom_treescale(0,0.2, width = 0.05) + 
+  xlim(c(-0.025, 0.65)) +
+  theme(legend.position = c(0.15, 0.2))
+```
+```{r}
+pdf("./outputs/r_figures/hydractinid_ef1a_tree_final_2.pdf", width = 10.5, height = 5.5)
+print(hydractinid_ef1a_tree)
+dev.off()
+```
+
+## Summarize alignment
+```{r}
+hydractinid_ef1a_fasta <- ape::read.FASTA("./data/marker_genes/EF1A/Genbank_EF1A_seqs_aligned_clipkit.fasta")
+```
+```{r}
+distance_matrix <- dist.dna(hydractinid_ef1a_fasta, model = "p")
+
+as.matrix(distance_matrix) %>% View()
+```
+
+
+```{r}
+pdf("./outputs/figures/marker_genes_genome_ref_trees.pdf", width = 8.5, height = 6.5)
+ggtree(tree_16S) + geom_tiplab(size = 3, hjust = -0.02) 
+ggtree(tree_ef1a) + geom_tiplab(size = 3, hjust = -0.02) 
+dev.off
+```
+

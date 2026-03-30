@@ -1,0 +1,414 @@
+---
+title: "Sharkmer barcodes"
+author: "Mike Connelly"
+date: "2025-09-24"
+output: html_document
+---
+## Setup and packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, cache = TRUE)
+options(stringsAsFactors = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+```{r packages, message=FALSE}
+library("tidyverse")
+library("ape")
+library("pegas")
+#
+source("./R/setup_colors_functions.R")
+#
+`%notin%` <- Negate(`%in%`)
+```
+
+## Import sample metadata
+```{r sample_data_import}
+samples <- read_csv("./data/Towson_Hydractiniidae_all_metadata_march2026.csv")
+```
+```{r}
+blastn_cols <- c("qseqid", "sseqid", "pident", "length", "mismatch", "gapopen", "qstart", "qend", "sstart", "send", "evalue", "bitscore", "sscinames", "stitle") #
+```
+
+## Analyze barcode sequences obtained using sharkmer
+Mitochondrial: 16S, CO1 
+Nuclear: 18S, 28S(-v2), ITS(-v2), EF1A
+
+ - Inspect sharkmer results
+ - Best BLASTN hits
+ - Multiple sequence alignment
+ - Haplotype network (16S, CO1)
+ - Phylogenetic tree
+
+Which samples do I have which barcodes for? Presence/absence table
+
+## Miglietta 16S
+  miglietta_16S
+    forward: ACGGAATGAACTCAAATCATGT
+    reverse: TCGACTGTTTACCAAAAACATA
+    max-length: 1000
+    min-coverage: 2
+    mismatches: 2
+    trim: 15
+    citation: Miglietta et al. 2009
+    notes: Product is about 700bp long
+    arguments: --pcr "forward=ACGGAATGAACTCAAATCATGT,reverse=TCGACTGTTTACCAAAAACATA,max-length=1000,name=miglietta_16S"
+
+### Sharkmer results
+```{r}
+samples_miglietta_16S_sharkmer <- read_delim("./outputs/sharkmer/all_processed/miglietta_16S/sharkmer_all_miglietta_16S_fasta_summary.txt") %>%
+  mutate(`Sample_ID` = gsub("_mig.*$", "", gsub(">", "", seq))) %>%
+  left_join(samples)
+
+samples_miglietta_16S_sharkmer %>% group_by(Sample_ID) %>% count() %>% View()
+```
+
+### Import BLAST hits
+```{r}
+blast_hits_miglietta_16S <- read_tsv("./outputs/sharkmer/all_processed/miglietta_16S/sharkmer_all_miglietta_16S_600_top_blastn_hit.txt", col_names = blastn_cols)
+
+best_blast_hits_miglietta_16S <- blast_hits_miglietta_16S %>% group_by(qseqid) %>% slice_max(bitscore)
+
+best_blast_hits_miglietta_16S %>% group_by(sseqid, stitle) %>% count()
+
+# 347/358 full-length sequences (96.9%), hits to H. symbiolongicarpus (312), H. polyclina (33), P. americana (1), and Eucheilota maculata (1) mt genomes
+# missing: AST_12, CCB_10, CCB_11, LHP_5, WHS_3B, BSH_9, OSB_5, OSB_10A, OSB_15, ECJ_1
+```
+```{r}
+sample_species_IDs <- best_blast_hits_miglietta_16S %>% mutate("Sample_ID" = sapply(str_split(qseqid, "_"), function(x) paste(x[1], x[2], sep = "_")),
+                                         "Species_ID" = ifelse(grepl("symbiolongicarpus", stitle), "Hydractinia symbiolongicarpus",
+                                                               ifelse(grepl("polyclina", stitle), "Hydractinia polyclina",
+                                                                      ifelse(grepl("Podocoryna", stitle), "Podocoryna americana",
+                                                                             "Eucheilota maculata")))) %>% 
+  dplyr::select(Sample_ID, Species_ID)
+```
+```{r}
+sample_species_IDs %>% filter(Species_ID == "Hydractinia polyclina") %>% View() #%>% select(Sample_ID) %>% write_lines("./data/hpoly_samples.txt")
+```
+
+### Import sequence alignment 
+```{r import_alignment}
+data <- read.dna("./outputs/sharkmer/all_processed/miglietta_16S/sharkmer_midatlantic_miglietta_16S_600_aligned_clipkit.fasta", format = "fasta")
+checkAlignment(data, what = 1:4)
+# 120 sequences, 631 sites
+# attributes(data)
+# dimnames(data)[[1]]
+```
+
+### Haplotype network 
+```{r haplotypes}
+dataHaplo <- haplotype(data)
+dataHaplo
+```
+
+```{r extract haplotypes and build network}
+dataHaplo <- sort(dataHaplo, what = "labels")
+# attributes(dataHaplo)
+dataNet <- haploNet(dataHaplo)
+# dataNet <- mst(dataHaplo)
+# dataNet <- mjn(dataHaplo)
+```
+```{r basic haplotype net}
+plot(dataNet,
+     show.mutation = 3)
+```
+```{r}
+plot(dataNet,
+     size = attr(dataNet, "freq"),
+     show.mutation = 3,
+     labels = F,
+     legend = c(-100,100))
+```
+```{r extract sequence labels}
+seq_labels <- dimnames(data)[[1]]
+# seq_labels
+seq_ids <- gsub("_mig.*$", "", seq_labels)
+# seq_ids
+```
+```{r countHap}
+countHap <- function(hap = h, dna = x){
+  with(
+    stack(setNames(attr(hap, "index"), rownames(hap))),
+    table(haplotype = ind, seq = attr(dna, "dimnames")[[1]][values])
+  )
+}
+```
+```{r genotype haplotype matches}
+df <- as.data.frame(countHap(dataHaplo, data))
+good <- df %>% filter(Freq == 1)
+```
+```{r select_good_haplotypes}
+good$`Sample_ID` <- gsub("_mig.*", "", good$seq)
+#
+sample_haplotypes <- good %>% dplyr::select(`Sample_ID`, `haplotype`) %>% left_join(samples)
+```
+
+### Summarize haplotypes
+```{r}
+sample_haplotypes %>% group_by(haplotype, `Site code`) %>% count() %>% pivot_wider(names_from = `Site code`, values_from = n)
+```
+
+### Phylogenetic tree
+
+Include only unique haplotypes and reference sequences
+
+## Cnidaria 16S
+  cnidaria_16S
+    forward: GRCTGTTTACCAAAAACATA
+    reverse: AATTCAACATMGAGG
+    min-length: 500
+    max-length: 700
+    min-coverage: 2
+    mismatches: 2
+    trim: 15
+    citation: Modified from Cunningham and Buss 1993 https://doi.org/10.1016/0305-1978(93)90009-G 
+    notes: Amplifies portions of domains IV and V. Product is about 580bp
+    arguments: --pcr "forward=GRCTGTTTACCAAAAACATA,reverse=AATTCAACATMGAGG,name=cnidaria_16S,max-length=700,min-length=500,min-coverage=2,mismatches=2,trim=15"
+
+### Sharkmer results
+```{r}
+samples_cnidaria_16S_sharkmer <- read_delim("./outputs/sharkmer/all_processed/cnidaria_16S/sharkmer_all_cnidaria_16S_fasta_summary.txt") %>%
+  mutate(`Sample_ID` = gsub("_cnid.*$", "", gsub(">", "", seq))) %>%
+  left_join(samples)
+
+samples_cnidaria_16S_sharkmer %>% group_by(Sample_ID) %>% count()
+```
+
+### Import BLAST hits
+```{r}
+blast_hits_cnidaria_16S <- read_tsv("./outputs/sharkmer/all_processed/cnidaria_16S/sharkmer_all_cnidaria_16S_500_top_blastn_hit.txt", col_names = blastn_cols)
+
+best_blast_hits_cnidaria_16S <- blast_hits_cnidaria_16S %>% group_by(qseqid) %>% slice_max(bitscore, with_ties = F)
+
+best_blast_hits_cnidaria_16S %>% group_by(sseqid, stitle) %>% count()
+
+# 352/358 full-length sequences (96.9%), hits to H. symbiolongicarpus (311), H. polyclina (33), P. americana (1), and Eucheilota maculata (1) mt genomes
+```
+
+
+## Cnidaria CO1
+  cnidaria_CO1
+    forward: TCATAARGATATHGG
+    reverse: RTGNCCAAAAAACCA
+    min-length: 600
+    max-length: 800
+    min-coverage: 2
+    mismatches: 2
+    trim: 15
+    citation: Modified from Folmer et al. 1994
+    notes: Product is about 700bp long
+    arguments: --pcr "forward=TCATAARGATATHGG,reverse=RTGNCCAAAAAACCA,name=cnidaria_CO1,max-length=800,min-length=600,min-coverage=2,mismatches=2,trim=15"
+
+### Sharkmer results
+```{r}
+samples_cnidaria_CO1_sharkmer <- read_delim("./outputs/sharkmer/all_processed/cnidaria_CO1/sharkmer_all_cnidaria_CO1_fasta_summary.txt") %>%
+  mutate(`Sample_ID` = gsub("_cni.*$", "", gsub(">", "", seq))) %>%
+  left_join(samples)
+
+samples_cnidaria_CO1_sharkmer %>% group_by(Sample_ID) %>% count() %>% View()
+```
+
+### Import BLAST hits
+```{r}
+blast_hits_cnidaria_CO1 <- read_tsv("./outputs/sharkmer/all_processed/cnidaria_CO1/sharkmer_all_cnidaria_CO1_600_top_blastn_hit.txt", col_names = blastn_cols)
+
+best_blast_hits_cnidaria_CO1 <- blast_hits_cnidaria_CO1 %>% group_by(qseqid) %>% slice_max(bitscore)
+
+best_blast_hits_cnidaria_CO1 %>% group_by(sseqid, stitle) %>% count()
+
+```
+
+### Import sequence alignment 
+```{r import_alignment}
+data <- read.dna("./outputs/sharkmer/all_processed/sharkmer_midatlantic_cnidaria_CO1_600_aligned_clipkit.fasta", format = "fasta")
+checkAlignment(data, what = 1:4)
+# 120 sequences, 631 sites, gaps
+# attributes(data)
+# dimnames(data)[[1]]
+```
+
+
+## Cnidaria 18S
+  cnidaria_18S
+    forward: AACCTGGTTGATCCTGCCAGT
+    reverse: TGATCCTTCTGCAGGTTCACCTAC
+    min-length: 1600
+    max-length: 2000
+    min-coverage: 2
+    mismatches: 2
+    trim: 15
+    citation: Medlin et al. 1988 https://doi.org/10.1016/0378-1119(88)90066-2
+    notes: Product is about 1790bp
+    arguments: --pcr "forward=AACCTGGTTGATCCTGCCAGT,reverse=TGATCCTTCTGCAGGTTCACCTAC,name=cnidaria_18S,max-length=2000,min-length=1600,min-coverage=2,mismatches=2,trim=15"
+    
+### Sharkmer results
+```{r}
+samples_cnidaria_18S_sharkmer <- read_delim("./outputs/sharkmer/all_processed/cnidaria_18S/sharkmer_all_cnidaria_18S_fasta_summary.txt") %>%
+  mutate(`Sample_ID` = gsub("_cni.*$", "", gsub(">", "", seq))) %>%
+  left_join(samples)
+
+samples_cnidaria_18S_sharkmer %>% group_by(Sample_ID) %>% count() %>% View()
+```
+
+### Import BLAST hits
+```{r}
+blast_hits_cnidaria_18S <- read_tsv("./outputs/sharkmer/all_processed/cnidaria_18S/sharkmer_all_cnidaria_18S_1500_top_blastn_hit.txt", col_names = blastn_cols)
+best_blast_hits_cnidaria_18S <- blast_hits_cnidaria_18S %>% group_by(qseqid) %>% slice_max(bitscore, with_ties = F)
+
+best_blast_hits_cnidaria_18S %>% group_by(sseqid, stitle) %>% count()
+
+```
+
+## Cnidaria 28S
+  cnidaria_28S
+    forward: CCYYAGTAACGGCGAGT
+    reverse: SWACAGATGGTAGCTTCG
+    min-length: 2900
+    max-length: 3500
+    min-coverage: 2
+    mismatches: 2
+    trim: 15
+    citation: Evans et al. 2008. https://doi.org/10.1186/1471-2148-8-139
+    notes: Forward primer is F97, reverse is R3238. Product is about 3230bp.
+    arguments: --pcr "forward=CCYYAGTAACGGCGAGT,reverse=SWACAGATGGTAGCTTCG,name=cnidaria_28S,max-length=3500,min-length=2900,min-coverage=2,mismatches=2,trim=15"
+    
+### Sharkmer results
+```{r}
+samples_cnidaria_28S_sharkmer <- read_delim("./outputs/sharkmer/all_processed/cnidaria_28S/sharkmer_all_cnidaria_28S_fasta_summary.txt") %>%
+  mutate(`Sample_ID` = gsub("_cni.*$", "", gsub(">", "", seq))) %>%
+  left_join(samples)
+
+samples_cnidaria_28S_sharkmer %>% group_by(Sample_ID) %>% count() %>% View()
+```
+    
+### Import BLAST hits
+```{r}
+blast_hits_cnidaria_28S <- read_tsv("./outputs/sharkmer/all_processed/cnidaria_28S/sharkmer_all_cnidaria_28S_1000_top_blastn_hit.txt", col_names = blastn_cols)
+best_blast_hits_cnidaria_28S <- blast_hits_cnidaria_28S %>% group_by(qseqid) %>% slice_max(bitscore, with_ties = F)
+
+best_blast_hits_cnidaria_28S %>% group_by(sseqid, stitle) %>% count()
+
+```
+
+## Cnidaria 28S-v2
+  cnidaria_28S-v2
+    forward: CGTGAAACCGYTRRAAGGG
+    reverse: TTGGTCCGTGTTTCAAGACG
+    min-length: 300
+    max-length: 700
+    min-coverage: 2
+    mismatches: 2
+    trim: 15
+    citation: McCartin et al 2024. https://doi.org/10.7717/peerj.18607
+    notes: Anth-28S-eDNA; Product is about 540bp
+    arguments: --pcr "forward=CGTGAAACCGYTRRAAGGG,reverse=TTGGTCCGTGTTTCAAGACG,name=cnidaria_28S-v2,max-length=700,min-length=300,min-coverage=2,mismatches=2,trim=15"
+    
+### Sharkmer results
+```{r}
+samples_cnidaria_28Sv2_sharkmer <- read_delim("./outputs/sharkmer/all_processed/cnidaria_28S-v2/sharkmer_all_cnidaria_28S-v2_fasta_summary.txt") %>%
+  mutate(`Sample_ID` = gsub("_cni.*$", "", gsub(">", "", seq))) %>%
+  left_join(samples)
+
+samples_cnidaria_28Sv2_sharkmer %>% group_by(Sample_ID) %>% count() %>% View()
+```
+    
+### Import BLAST hits
+```{r}
+blast_hits_cnidaria_28Sv2 <- read_tsv("./outputs/sharkmer/all_processed/cnidaria_28S-v2/sharkmer_all_cnidaria_28S-v2_400_top_blastn_hit.txt", col_names = blastn_cols)
+best_blast_hits_cnidaria_28Sv2 <- blast_hits_cnidaria_28Sv2 %>% group_by(qseqid) %>% slice_max(bitscore, with_ties = F)
+
+best_blast_hits_cnidaria_28Sv2 %>% group_by(sseqid, stitle) %>% count()
+
+```
+
+## Cnidaria ITS
+  cnidaria_ITS
+    forward: TACACACCGCCCGTCGCTACTA
+    reverse: ACTCGCCGTTACTRRGG
+    min-length: 600
+    max-length: 1000
+    min-coverage: 2
+    mismatches: 2
+    trim: 15
+    citation: Ji et al 2003. https://doi.org/10.1046/j.1471-8286.2003.00519.x
+    notes: Forward primer is CAS18SF1, position 1843, from Ji et al 2003. The reverse primer is the reverse complement of the 28S forward primer. Product is about 770-880bp.
+    arguments: --pcr "forward=TACACACCGCCCGTCGCTACTA,reverse=ACTCGCCGTTACTRRGG,name=cnidaria_ITS,max-length=1000,min-length=600,min-coverage=2,mismatches=2,trim=15"
+    
+### Sharkmer results
+```{r}
+samples_cnidaria_ITS_sharkmer <- read_delim("./outputs/sharkmer/all_processed/cnidaria_ITS/sharkmer_all_cnidaria_ITS_fasta_summary.txt") %>%
+  mutate(`Sample_ID` = gsub("_cni.*$", "", gsub(">", "", seq))) %>%
+  left_join(samples)
+
+samples_cnidaria_ITS_sharkmer %>% group_by(Sample_ID) %>% count() %>% View() #%>% ungroup %>%  count(n) %>%  View()
+```
+
+### Import BLAST hits
+```{r}
+blast_hits_cnidaria_ITS <- read_tsv("./outputs/sharkmer/all_processed/cnidaria_ITS/sharkmer_all_cnidaria_ITS_500_top_blastn_hit.txt", col_names = blastn_cols)
+best_blast_hits_cnidaria_ITS <- blast_hits_cnidaria_ITS %>% group_by(qseqid) %>% slice_max(bitscore, with_ties = F)
+
+best_blast_hits_cnidaria_ITS %>% group_by(sseqid, stitle) %>% count()
+
+```
+## Cnidaria ITS
+  cnidaria_ITS-v2
+    forward: GTAGGTGAACCTGCAGAAGGATCA
+    reverse: ACTCGCCGTTACTRRGG
+    min-length: 600
+    max-length: 1000
+    min-coverage: 2
+    mismatches: 2
+    trim: 15
+    citation: Ji et al 2003. https://doi.org/10.1046/j.1471-8286.2003.00519.x
+    notes: Forward primer is reverse complement of 18S reverse primer. The reverse primer is the reverse complement of the 28S forward primer. Product is about 620-730bp.
+    arguments: --pcr "forward=GTAGGTGAACCTGCAGAAGGATCA,reverse=ACTCGCCGTTACTRRGG,name=cnidaria_ITS-v2,max-length=1000,min-length=600,min-coverage=2,mismatches=2,trim=15"
+    
+### Sharkmer results
+```{r}
+samples_cnidaria_ITSv2_sharkmer <- read_delim("./outputs/sharkmer/all_processed/cnidaria_ITS-v2/sharkmer_all_cnidaria_ITS-v2_fasta_summary.txt") %>%
+  mutate(`Sample_ID` = gsub("_cni.*$", "", gsub(">", "", seq))) %>%
+  left_join(samples)
+
+samples_cnidaria_ITSv2_sharkmer %>% group_by(Sample_ID) %>% count() %>% View() #%>% ungroup %>%  count(n) %>%  View()
+```
+
+### Import BLAST hits
+```{r}
+blast_hits_cnidaria_ITSv2 <- read_tsv("./outputs/sharkmer/all_processed/cnidaria_ITS-v2/sharkmer_all_cnidaria_ITS-v2_500_top_blastn_hit.txt", col_names = blastn_cols)
+best_blast_hits_cnidaria_ITSv2 <- blast_hits_cnidaria_ITS %>% group_by(qseqid) %>% slice_max(bitscore)
+
+best_blast_hits_cnidaria_ITSv2 %>% group_by(sseqid, stitle) %>% count()
+
+```
+
+
+## Cnidaria EF1A
+  cnidaria_EF1A
+    forward: AMGWGGHATGGTDGCTGGTG
+    reverse: YTTRATNAYDCCAACAGCWAC
+    min-length: 200
+    max-length: 3000
+    min-coverage: 2
+    mismatches: 2
+    trim: 15
+    citation: 
+    notes: 
+    arguments: --pcr "forward=AMGWGGHATGGTDGCTGGTG,reverse=YTTRATNAYDCCAACAGCWAC,name=cnidaria_EF1A,max-length=3000,min-length=200,min-coverage=2,mismatches=2,trim=15"
+    
+### Sharkmer results
+```{r}
+samples_cnidaria_EF1A_sharkmer <- read_delim("./outputs/sharkmer/all_processed/cnidaria_EF1A/sharkmer_all_cnidaria_EF1A_fasta_summary.txt") %>%
+  mutate(`Sample_ID` = gsub("_cni.*$", "", gsub(">", "", seq))) %>%
+  left_join(samples)
+
+samples_cnidaria_EF1A_sharkmer %>% group_by(Sample_ID) %>% count() %>% ungroup %>%  count(n) %>%  View()
+```
+
+### Import BLAST hits
+```{r}
+blast_hits_cnidaria_EF1A <- read_tsv("./outputs/sharkmer/all_processed/sharkmer_all_cnidaria_EF1A_200_top_blastn_hit.txt", col_names = blastn_cols)
+best_blast_hits_cnidaria_EF1A <- blast_hits_cnidaria_EF1A %>% group_by(qseqid) %>% slice_max(bitscore, with_ties = F)
+
+best_blast_hits_cnidaria_EF1A %>% group_by(sseqid, stitle) %>% count()
+
+```
+

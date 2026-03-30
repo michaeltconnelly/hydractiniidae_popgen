@@ -1,0 +1,124 @@
+---
+title: "Pipeline QC metrics"
+author: "Mike Connelly"
+date: "07/29/2025"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+```{r packages, message=FALSE}
+library("tidyverse")
+#
+source("./R/setup_colors_functions.R")
+```
+
+```{r sample_data_import}
+samples <- read_csv("./data/Towson_Hydractiniidae_all_metadata_march2026.csv")
+```
+
+## Import/inspect genome skimming pipeline QC metrics
+  Note: Run MultiQC on R1 reads only to create reports for all 358 analysis samples (125 + 233).
+        
+### Raw reads
+```{r import_multiqc_data}
+# raw reads
+multiqc_fastqc <- read_tsv("./outputs/QCs/fastqcs/multiqc_data/multiqc_fastqc.txt") %>%
+  mutate("Sample_ID" = gsub("_R[12]", "", Sample)) %>%
+  left_join(samples, by = "Sample_ID") %>% 
+  mutate("Site code" = ordered(`Site code`, levels = names(site_cols)))
+```
+```{r inspect_read_depth}
+# quick check of sample depth
+pdf("./outputs/figures/total_read_distribution.pdf", width = 6.5, height = 4.76)
+multiqc_fastqc %>%
+  mutate(Sample = fct_reorder(Sample, desc(`Total Sequences`))) %>%
+  ggplot(aes(Sample, `Total Sequences`, color = `Site code`)) +
+  scale_color_manual(values = site_cols) +
+  geom_point(size = 1.5) +
+  geom_hline(yintercept = 1000000, color = "red") +
+  ylim(c(0, 1e8)) +
+  theme(axis.text.x = element_blank()) +
+  ggtitle("Total number of Raw Reads per sample")
+dev.off()
+```
+
+```{r read_stats}
+# Produce total read summary statistics for manuscript
+sum(multiqc_fastqc$`Total Sequences`)
+# 17,684,433,041
+mean(multiqc_fastqc$`Total Sequences`)
+# 49,397,858
+sd(multiqc_fastqc$`Total Sequences`)
+# 14,660,208
+```
+```{r}
+multiqc_fastqc %>% group_by(Round) %>% summarise("total" = sum(`Total Sequences`),
+                                                 "mean" = mean(`Total Sequences`))
+multiqc_fastqc %>% group_by(Batch) %>% summarise("total" = sum(`Total Sequences`),
+                                                 "mean" = mean(`Total Sequences`))
+```
+
+```{r}
+pdf("./outputs/figures/read_site_distribution.pdf", width = 8.5, height = 4.76)
+multiqc_fastqc %>% 
+  ggplot(aes(`Site code`, `Total Sequences`, color = `Site code`)) +
+  geom_boxplot() +
+  geom_point() +
+  scale_color_manual(values = site_cols) +
+  geom_hline(yintercept = 1e7, lty = 2) +
+  ylim(c(0, 1.2e8)) +
+  theme(legend.position = "none") +
+  ggtitle("Raw Read Pairs per Site")
+dev.off()
+```
+
+```{r}
+multiqc_fastqc %>% ggplot(aes(total_deduplicated_percentage)) + geom_histogram(bins = 50)
+multiqc_fastqc %>% ggplot(aes(`%GC`, fill = `Site code`)) + geom_histogram(binwidth = 0.5)
+```
+
+
+### Trimmed reads - Trimmomatic vs FASTP
+
+### Aligned reads
+```{r import_multiqc_data}
+# raw reads
+multiqc_flagstat <- read_tsv("./outputs/QCs/flagstats/multiqc_data/multiqc_samtools_flagstat.txt") %>%
+  mutate("Sample_ID" = gsub("_flagstat", "", Sample)) %>%
+  left_join(samples, by = "Sample_ID") %>% 
+  mutate("Site code" = ordered(`Site code`, levels = names(site_cols)))
+```
+```{r}
+multiqc_flagstat %>%
+  mutate(Sample = fct_reorder(Sample, desc(`flagstat_total`))) %>%
+  ggplot(aes(Sample, `properly paired_passed_pct`, color = `Site code`)) +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = site_cols) +
+  geom_hline(yintercept = 35, color = "red") +
+  ylim(c(0, 100)) +
+  theme(axis.text.x = element_blank()) +
+  ggtitle("Mapping rate")
+```
+```{r alignment_stats}
+# Produce alignment summary statistics for manuscript
+mean(multiqc_flagstat$`mapped_passed_pct`)
+# 83.86264
+sd(multiqc_flagstat$`mapped_passed_pct`)
+# 18.55942
+range(multiqc_flagstat$`mapped_passed_pct`)
+# 14.40 98.97
+```
+```{r}
+pdf("./outputs/figures/mapping_site_distribution.pdf", width = 6.5, height = 4.76)
+multiqc_flagstat %>% 
+  ggplot(aes(`Site code`, `mapped_passed_pct`, color = `Site code`)) +
+  geom_boxplot() +
+  geom_point() +
+  scale_color_manual(values = site_cols) +
+  ylim(c(0, 100)) +
+  ggtitle("Read mapping percentages per site")
+dev.off()
+```
+Explore correlations between read parameters (GC content, duplicate reads, warning flags) and mapping rates, also explore reasons for outlier samples in Pcangsd --> cutoffs for alignment rates, SNP completeness, etc?

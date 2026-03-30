@@ -1,0 +1,154 @@
+---
+title: "PHYLUCE trees"
+author: "Mike Connelly"
+date: "2026-03-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+```{r packages, message=FALSE}
+library("tidyverse")
+library("treeio")
+library("ggtree")
+library("phytools")
+#
+source("./R/setup_colors_functions.R")
+```
+```{r sample_data_import}
+samples <- read_csv("./data/Towson_Hydractiniidae_all_metadata_march2026.csv")
+```
+```{r reference_genome_metadata}
+# Reference genomes
+outgroups <- read_csv("./data/outgroups/Hydrozoa_genome_metadata_032526.csv")
+
+# Tidy reference genome metadata
+outgroups_tidy <- outgroups %>% mutate("Abbv" = paste0(tolower(Prefix), "1")) %>% 
+  select(Abbv, Phylum:Prefix, Base:`NCBI Accession`, `Length (bp)`:`Final Number of Loci Recovered`)
+
+outgroups_abbv_organism <- outgroups_tidy %>%
+  select(Abbv, Organism, Order, Family) %>% 
+  mutate(Tip_Label = paste0("italic(", `Organism`, ")") %>% sub(" ", "~", .))
+
+# Create a named vector for lookup: names are old values, elements are new values
+lookup_vector <- setNames(outgroups_abbv_organism$Tip_Label, outgroups_abbv_organism$Abbv)
+```
+
+## IQ-TREE w/ PHYLUCE alignments
+### 5 *Hydractinia* spp. representatives (10) + *Podocoryna* LYN-32 + *Eucheilota* CGB_8 + reference genomes (23) (n = 36 taxa)
+#### 75% matrix
+ 35 taxa, 320 UCE loci, 132,544 bp, 67,935 informative sites
+```{r import_tree}
+tree <- read.newick("./outputs/iqtree/iqtree_phyluce_test_3.treefile")
+
+# midpoint root
+tree <- midpoint.root(tree)
+
+# drop misplaced tips (easier to view node labels) - Craspedacusta sowerbii
+# tree <- ape::drop.tip(tree, tip = "craso1")
+
+# set root-edge
+tree$root.edge <- 1
+
+# adjust tip labels to remove contigs suffix 
+tips <- gsub("_contigs$", "", tree$tip.label)
+# substitute species names for abbreviations
+# Substitute values
+new_vector <- lookup_vector[tips]
+new_vector_coalesce <- coalesce(new_vector, tips)
+tips <- new_vector_coalesce
+
+# Reference genomes: tip names
+
+# check tips
+tips
+# assign new tip labels to tree
+tree$tip.label <- tips
+
+# check topology with basic viz
+ggtree(tree, right = TRUE) +
+  geom_tiplab() +
+  # node labels (numeric)
+  geom_text(aes(label=node), hjust=-.3, size = 2) +
+  geom_treescale(width = 0.1, x = 0) +
+  geom_rootedge(rootedge = 0.05)
+```
+
+
+```{r tip_metadata}
+# create dataframe holding metadata 
+tips_metadata <- data.frame(tips)
+tips_metadata$class <- ifelse(grepl("_", tips), "Field", "Genome")
+# black for genomes, dark blue for field samples
+```
+```{r node_labels}
+# node labels with bootstrap support
+node.labels <- tree$node.label
+# preserve original labels
+node.labels.original <- node.labels
+node.labels <- node.labels.original
+
+# remove root label
+node.labels[node.labels == "Root"] <- ""
+# remove 100% supported node labels
+# node.labels[node.labels == "100/100"] <- ""
+# define high-support bootstrap values - >90%?
+node.labels[grepl("^100", node.labels)] <- "*"
+# node.labels[grepl("^9", node.labels)] <- ""
+# mark low-support bootstrap values with asterisks - <80%?
+# node.labels[grepl("^[8]", node.labels)] <- ""
+# node.labels[grepl("^[5-7]", node.labels)] <- "<80"
+# node.labels[grepl("^[0-4]", node.labels)] <- "<50"
+
+# check to see if formatting is correct
+node.labels
+#
+tree$node.label <- node.labels
+```
+
+```{r full_ggtree_viz}
+pdf("./outputs/figures/iqtree_representative_75pct_tree_clades_final.pdf", width = 8.5, height = 6.5)
+
+tree %>% ggtree(., right = TRUE) %<+% tips_metadata + 
+  # figure out way to highlight clades
+  # geom_highlight(node = 55, fill = "orange", type = "gradient", gradient.direction = 'rt', alpha = 1, to.bottom = T) +
+  # geom_highlight(node = 57, fill = "coral", type = "gradient", gradient.direction = 'rt', alpha = 1, to.bottom = T) +
+  # geom_highlight(node = 59, fill = "dodgerblue", type = "gradient", gradient.direction = 'rt', alpha = 1, to.bottom = T) +
+  # geom_highlight(node = 65, fill = "turquoise", type = "gradient", gradient.direction = 'rt', alpha = 1, to.bottom = T) +
+  # geom_highlight(node = 47, fill = "orchid", type = "gradient", gradient.direction = 'rt', alpha = 1, to.bottom = T) +
+  # 
+  # node labels
+  # geom_nodelab(size = 2, hjust = 0, nudge_y = 0, geom = "shadowtext", color = "grey90", bg.color = "white") +
+  geom_nodelab(size = 2, hjust = 0, nudge_y = 0,  color = "grey0") +
+  
+  # tip labels
+  geom_tiplab(hjust = 0, aes(color = `class`, size = `class`), parse = T, align = F) +
+  
+  # label clades
+  geom_cladelab(node = 55, label = "Aplanulata", fontsize = 4, fontface = 1, offset = 0.55, offset.text = 0.001) +
+  geom_cladelab(node = 57, label = "Capitata", fontsize = 4, fontface = 1, offset = 0.55, offset.text = 0.001) +
+  geom_cladelab(node = 59, label = "Leptothecata", fontsize = 4, fontface = 1, offset = 0.55, offset.text = 0.001) +
+  geom_cladelab(node = 65, label = "Siphonophorae", fontsize = 4, fontface = 1, offset = 0.55, offset.text = 0.001) +
+  geom_cladelab(node = 47, label = "Filifera III/IV", fontsize = 4, fontface = 1, offset = 0.55, offset.text = 0.001) +
+
+  # setup tree visualization
+  geom_treescale(width = 0.2, x = 0, y = -1, linesize = 0.75) +
+  geom_rootedge(rootedge = 0.025) +
+  ggplot2::xlim(-0.025, 2) +
+  scale_color_manual(values = c("blue", "black")) +
+  scale_size_manual(values = c(4,3)) +
+  theme(plot.margin = margin(5,2,2,5, unit = "mm"),
+        legend.position = "none",
+        plot.title = element_blank(),
+        plot.subtitle = element_text(size = 10)) 
+#
+dev.off()
+```
+
+
+
+
+#### 50% matrix
+ 35 taxa, 492 UCE loci, 215,786 bp, 110,184 informative sites

@@ -1,0 +1,71 @@
+#!/bin/bash
+
+#SBATCH --mem=192g
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=lscratch:24
+#SBATCH --time=10-00:00:00
+#SBATCH --job-name angsd_ibs_hydractinia
+#SBATCH --mail-type BEGIN,END,FAIL,TIME_LIMIT_80
+
+# load modules
+module load angsd
+
+# create variable for source and target directories
+prodir="/data/NHGRIBaxevanis/connellym2/projects/hydractiniidae_popgen"
+
+# specify sample set
+set=$1 # ex. midatlantic
+samples=$(cat ${prodir}/data/${set}_samples.txt)
+
+# creating an output directory for set output files
+if [ ! -d "${prodir}/outputs/angsd/${set}" ]; then mkdir ${prodir}/outputs/angsd/${set}; fi
+
+# assign variable for output directory
+setdir="${prodir}/outputs/angsd/${set}"
+
+# making a list of bam file paths
+ls ${prodir}/outputs/alignments/*md.rg.bam | grep -f ${prodir}/data/${set}_samples.txt > ${setdir}/${set}_bamfile.txt
+
+# verify samples are correct
+echo " These are the samples to be processed: ${samples}, there are $(cat ${setdir}/${set}_bamfile.txt | wc -l) in total"
+
+# assign variable to bamfile
+BAMS=${setdir}/${set}_bamfile.txt
+
+# ----- IBS with ANGSD
+#FILTERS:
+# (ALWAYS record your filter settings and explore different combinations to confirm that results are robust. )
+# Suggested filters :
+# -snp_pval 1e-5 : high confidence that the SNP is not just sequencing error 
+# -minMaf 0.05 : only common SNPs, with allele frequency 0.05 or more.
+# set minInd to 85% of total number of samples
+nsamps=$(cat $BAMS | wc -l) 
+minindv=$(echo "$nsamps*0.85" | bc | awk '{print int($1+0.5)}')
+# also adding  filters against very badly non-HWE sites (such as, all calls are heterozygotes => lumped paralog situation) and sites with really bad strand bias:
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 30 -minQ 30 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd $minindv -snp_pval 1e-5 -minMaf 0.05"
+
+#TODO: 
+# -GL 1 : use samtools likelihood model
+# -doMajorMinor 1 : infer major and minor alleles from genotype likelihoods (-skipTriallelic 1 : skip tri-allelic sites)
+# -doMaf 1 : estimate allele frequency w/ fixed major and minor alleles 
+# -doCounts 1 : 
+# -makeMatrix 1 -doIBS 1 -doCov 1 : identity-by-state and covariance matrices based on single-read resampling (robust to variation in coverage across samples)
+# -doGeno 8 : bgenotype likelihoods format for ngsLD
+# -doPost 1 : calculate posterior allele frequencies using frequency as prior
+# -doGlf 2 : output beagle format (for admixture)
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doPost 1 -doGlf 2"
+
+angsd -b $BAMS -GL 1 $FILTERS $TODO -P $SLURM_CPUS_PER_TASK -out ${setdir}/${set}_ibs05
+
+# how many SNPs?
+zcat ${setdir}/${set}_ibs05.mafs.gz | tail -n +2 | wc -l
+
+# extract and index sites
+zcat ${setdir}/${set}_ibs05.mafs.gz | cut -f 1,2 | tail -n +2 > ${setdir}/${set}_Sites.txt
+# obtain list of scaffolds containing sites
+cat ${setdir}/${set}_Sites.txt | cut -f 1 | uniq > ${setdir}/${set}_chrs.txt
+angsd sites index ${setdir}/${set}_Sites.txt
+
+# scp ibsMat and bam file list to laptop
+
+echo = `date` job $JOB_NAME done

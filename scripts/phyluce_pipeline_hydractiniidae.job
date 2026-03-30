@@ -1,0 +1,155 @@
+#!/bin/sh
+#SBATCH --mem=192g
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=lscratch:24
+#SBATCH --time=2-00:00:00
+#SBATCH --job-name phyluce_pipeline_hydractiniidae
+#SBATCH --mail-type BEGIN,END,FAIL,TIME_LIMIT_80
+
+# create variable for source and target directories
+prodir="/data/NHGRIBaxevanis/connellym2/projects/hydractiniidae_popgen"
+
+# specify sample set
+set=$1 # ex. phyluce_test
+
+# conda activate phyluce-1.7.3
+
+# making a list of sample names
+set=$1 # argument is the prefix of a list of samples, ie. snapp_subset_K6_5X
+#
+samples=$(cat ${prodir}/data/${set}_samples.txt)
+
+## STEP 1 -----------------------------------------------------------------------------------------
+# make directory to hold contigs for a given analysis
+mkdir ${prodir}/outputs/spades/contigs/${set}
+
+# copy hydrozoan reference genome contigs and outgroup contigs from data - use Nematostella vectensis genome outgroup
+cp ${prodir}/data/outgroups/hydroidolina-genome-fasta/*.fasta ${prodir}/outputs/spades/contigs/${set}
+
+# copy sample contigs to working directory and rename files
+#for sample in ${samples} ; do cp ${prodir}/outputs/spades/${sample}/contigs.fasta ${prodir}/outputs/spades/contigs/${set}/${sample}_contigs.fasta ; done
+for sample in ${samples} ; do cp ${prodir}/outputs/spades/contigs/${sample}_contigs.fasta ${prodir}/outputs/spades/contigs/${set}/${sample}_contigs.fasta ; done
+
+
+# start phyluce contig match to probes - custom-made Hydroidolina baitset (hydroidolina-v1-master-probe-list-DUPE-SCREENED.fasta)
+phyluce_assembly_match_contigs_to_probes \
+    --contigs ${prodir}/outputs/spades/contigs/${set}/ \
+    --probes ${prodir}/data/probes/hydroidolina-v1-master-probe-list-DUPE-SCREENED.fasta \
+    --output ${prodir}/outputs/phyluce/uce-search-results/${set}
+
+## STEP 2 -----------------------------------------------------------------------------------------
+# create the basic configuration file
+CONFIG="${prodir}/outputs/phyluce/uce-search-results/${set}/${set}.conf"
+#
+echo '[all]' > $CONFIG
+# add desired sample contigs 
+for sample in $samples; do echo ${sample}_contigs  >> $CONFIG ; done
+# add outgroup taxa
+#echo "Seriatopora_hystrix_ReFuGe_contigs" >> $CONFIG
+# add reference UCEs: genomes and Oury GSHs
+#if [ -n $2 ]; then
+# add reference genome taxa
+echo "adding reference UCE sequences to pipeline"
+for i in ${prodir}/data/outgroups/hydroidolina-genome-fasta/*.fasta; do basename $i | cut -d . -f 1 >> $CONFIG; done
+
+#else echo "skipping reference UCE sequences" ;fi
+
+# make output directory for the set files and logs
+mkdir ${prodir}/outputs/phyluce/uce-taxon-sets/${set}
+mkdir ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/log
+
+# create the data matrix configuration file
+phyluce_assembly_get_match_counts \
+    --locus-db ${prodir}/outputs/phyluce/uce-search-results/${set}/probe.matches.sqlite \
+    --taxon-list-config $CONFIG \
+    --taxon-group 'all' \
+    --incomplete-matrix \
+    --output ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-taxa-incomplete.conf
+
+# get FASTA data for taxa in our taxon set
+phyluce_assembly_get_fastas_from_match_counts \
+    --contigs ${prodir}/outputs/spades/contigs/${set}/ \
+    --locus-db ${prodir}/outputs/phyluce/uce-search-results/${set}/probe.matches.sqlite \
+    --match-count-output ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-taxa-incomplete.conf \
+    --output ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-taxa-incomplete.fasta \
+    --incomplete-matrix ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-taxa-incomplete.incomplete \
+    --log-path ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/log
+
+## STEP 3 -----------------------------------------------------------------------------------------
+# creating a variable with the number of taxa
+ntaxa=$(grep "^\[.*\]" ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-taxa-incomplete.incomplete | wc -l)
+
+# align the data - turn off trimming and output FASTA
+phyluce_align_seqcap_align \
+    --input ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-taxa-incomplete.fasta \
+    --output ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed \
+    --taxa $ntaxa \
+    --aligner mafft \
+    --cores $SLURM_CPUS_PER_TASK \
+    --incomplete-matrix \
+    --output-format fasta \
+    --no-trim \
+    --log-path ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/log
+
+    # run gblocks trimming on the alignments
+phyluce_align_get_gblocks_trimmed_alignments_from_untrimmed \
+    --alignments ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed \
+    --output ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks \
+    --cores $SLURM_CPUS_PER_TASK \
+    --log ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/log
+    
+    # get alignment summary data
+phyluce_align_get_align_summary_data \
+    --alignments ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks \
+    --cores $SLURM_CPUS_PER_TASK \
+    --log-path ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/log
+
+## STEP 4 -----------------------------------------------------------------------------------------
+# align the data - turn off trimming and output FASTA
+phyluce_align_remove_locus_name_from_files  \
+    --alignments ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks \
+    --output ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks-clean \
+    --cores $SLURM_CPUS_PER_TASK \
+    --log-path ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/log
+
+## STEP 5 -----------------------------------------------------------------------------------------
+# creating a variable with the number of taxa
+ntaxa=$(grep "^\[.*\]" ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-taxa-incomplete.incomplete | wc -l)
+
+# 50% matrix
+phyluce_align_get_only_loci_with_min_taxa \
+    --alignments ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks-clean \
+    --taxa $ntaxa \
+    --percent 0.5 \
+    --output ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks-clean-50p \
+    --cores $SLURM_CPUS_PER_TASK \
+    --log-path ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/log
+
+# build the concatenated data matrix
+phyluce_align_concatenate_alignments \
+    --alignments ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks-clean-50p \
+    --output ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks-clean-50p-raxml \
+    --phylip \
+    --log-path ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/log
+
+# create formatted partitions file
+bash ${prodir}/bash/sed_partitions.sh ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks-clean-50p-raxml
+
+# 75% matrix
+phyluce_align_get_only_loci_with_min_taxa \
+    --alignments ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks-clean \
+    --taxa $ntaxa \
+    --percent 0.75 \
+    --output ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks-clean-75p \
+    --cores $SLURM_CPUS_PER_TASK \
+    --log-path ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/log
+
+# build the concatenated data matrix
+phyluce_align_concatenate_alignments \
+    --alignments ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks-clean-75p \
+    --output ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks-clean-75p-raxml \
+    --phylip \
+    --log-path ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/log
+
+# create formatted partitions file
+bash ${prodir}/bash/sed_partitions.sh ${prodir}/outputs/phyluce/uce-taxon-sets/${set}/${set}-mafft-nexus-internal-trimmed-gblocks-clean-75p-raxml

@@ -1,0 +1,24 @@
+#!/bin/sh
+#SBATCH --mem=72g
+#SBATCH --cpus-per-task=24
+#SBATCH --gres=lscratch:24
+#SBATCH --time=10-00:00:00
+#SBATCH --job-name iqtree_phyluce_test_3
+#SBATCH --mail-type BEGIN,END,FAIL,TIME_LIMIT_80
+
+# create variable for source and target directories
+prodir="/data/NHGRIBaxevanis/connellym2/projects/hydractiniidae_popgen"
+
+module load iqtree
+
+iqtree2 \
+-s ${prodir}/outputs/phyluce/uce-taxon-sets/phyluce_test_3/phyluce_test_3-mafft-nexus-internal-trimmed-gblocks-clean-75p-raxml/phyluce_test_3-mafft-nexus-internal-trimmed-gblocks-clean-75p-raxml.phylip \
+-p ${prodir}/outputs/phyluce/uce-taxon-sets/phyluce_test_3/phyluce_test_3-mafft-nexus-internal-trimmed-gblocks-clean-75p-raxml/phyluce_test_3-mafft-nexus-internal-trimmed-gblocks-clean-75p-raxml.partitions \
+--seqtype DNA \
+-m MFP \
+-bb 1000 \
+-alrt 1000 \
+-nt $SLURM_CPUS_PER_TASK \
+--prefix ${prodir}/outputs/iqtree/iqtree_phyluce_test_3
+
+echo = `date` job $JOB_NAME done
